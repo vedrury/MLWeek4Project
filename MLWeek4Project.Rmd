@@ -1,0 +1,120 @@
+---
+title: "Machine Learning Week 4 Project"
+author: "Vanessa Drury"
+date: "7/6/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Introduction  
+
+Our goal is to create a prediction model to accurately predict the classe, or way of performing an exercise (see below), given data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. 
+
+Data and explanation courtesy of GroupWare HAR:
+
+"In this work (see the paper) we first define quality of execution and investigate three aspects that pertain to qualitative activity recognition: the problem of specifying correct execution, the automatic and robust detection of execution mistakes, and how to provide feedback on the quality of execution to the user. We tried out an on-body sensing approach (dataset here), but also an "ambient sensing approach" (by using Microsoft Kinect - dataset still unavailable)
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."
+
+[Read more](http://groupware.les.inf.puc-rio.br/har#ixzz6QnByELGB)
+
+## Set-up  
+
+First we will load some libraries and the already partitioned training and test sets from the study.
+``` {r, setup, results = "hide", message=F, warning=F}
+# Load libraries
+library(caret)
+library(dplyr)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(gbm)
+
+
+# Make train dataset
+train<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", na.strings =c("","NA","#DIV/0!") )
+
+# Make test dataset
+test<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", na.strings =c("","NA","#DIV/0!") )
+```
+
+Next we clean up our training set so that we build a model based only on columns in the dataset that will be useful for prediction (i.e. remove information about subjects, timestamps, and columns with a majority of NA values).
+
+```{r, cleanup}
+# Remove subject/time column, near-zero variance, and majority NA columns
+train<-train[,-(1:7)]
+nzcol<-nearZeroVar(train)
+train<-train[,-nzcol]
+
+## excluding class variable, subset columns with NA sums
+trainsums<-(colSums(train[,-118],na.rm=F))
+trainsums<-as.data.frame(trainsums)
+trainsums$rownum<-1:dim(trainsums)[1]
+nacols<-subset(trainsums,is.na(trainsums))
+cleantrain<-train[,-nacols$rownum]
+```
+
+We will utilize cross-validation by separating our cleantrain dataset into sub-training (subtrain) and sub-testing  (subtest) sets. We will create our model using the subtrain set, and once we find one that represents the data well, we will apply it to subtest for validation. This will offer an estimate of how the model may perform with the final testing set.
+
+```{r, cv}
+# Make cross-validation sets
+set.seed(4001)
+intrain<-createDataPartition(cleantrain$classe,p=.7,list=F)
+subtrain<-cleantrain[intrain,]
+subtest<-cleantrain[-intrain,]
+```
+
+## Models  
+The first model we will try in order to predict classe from our new subtrain set will be a random forest model. This method uses a sophisticated version of decision trees that includes bootstrapping samples, boostrapping at each "tree split", and usually offers good accuracy. However, it is a slower model to build and may lead to overfitting and difficult interpretibility. With trControl, we specify that we want to use cross-validation for resampling with 10 iterations and that the model should run 200 trees.
+
+```{r, random forest model, cache=T}
+# Try random forest model
+para <- trainControl(method="cv", number=10)
+rffit <- train(classe ~ ., data=subtrain, method="rf", trControl=para, ntree=200)
+rffit 
+
+rfpred<-predict(rffit,subtest)
+confusionMatrix(rfpred,subtest$classe)
+```
+
+The accuracy of the random forest model is 0.9924 and the p-value is less than 2.2x10^-16, when used to predict the subtest data set. Therefore we can estimate that the out-of-sample error rate is 0.76%. This looks like a very promising model and no obvious adjustments seem to be needed, but let's see how other models perform, such as linear discriminate analysis and boosting via trees.
+
+```{r, other models, cache=T}
+## Linear discriminate analysis model
+ldafit <- train(classe ~ ., data=subtrain, method="lda")
+ldapred<-predict(ldafit,subtest)
+confusionMatrix(ldapred,subtest$classe)
+
+
+# Boosting model
+gbmfit <- train(classe ~ ., data=subtrain,method="gbm",verbose=F)
+gbmpred<-predict(gbmfit,subtest)
+confusionMatrix(gbmpred,subtest$classe)
+```
+
+As you can see, neither of these models perform better than the rest model, so we should choose the random forest model to use on the real test set.
+
+## Testing 
+```{r, test set run}
+rftestpred<-predict(rffit, test)
+rftestpred
+```
+
+These are the predicted classe values for each observation in the test set using our random forest model.
+
+
+## Decision Tree  
+  
+Here is a decision tree plot to visualize the algorithm used in our random forest predictions.
+
+```{r, plots, error=F, warning=F}
+rftree<-rpart(classe~.,data=subtrain)
+fancyRpartPlot(rftree,main = "Weight Lifting Exercise Prediction", sub="", Margin=0)
+
+```
+
+
+Citation:  
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6.
